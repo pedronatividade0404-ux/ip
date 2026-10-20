@@ -8,12 +8,15 @@ from fastapi import FastAPI, Request, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from supabase import create_client, Client
+import httpx
 
 load_dotenv()
 
 TOKEN = os.getenv("JARVIS_CLOUD_TOKEN", "").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
 
 if not TOKEN:
     raise RuntimeError("JARVIS_CLOUD_TOKEN nao configurado")
@@ -150,4 +153,61 @@ def sentinel_events(limit: int = Query(50, ge=1, le=500), device_id: str | None 
         if device_id: q = q.eq("device_id", device_id)
         r = q.order("created_at", desc=True).limit(limit).execute()
         return {"ok": True, "events": r.data or []}
+    except Exception as exc: return db_error(exc)
+
+
+@app.post("/v1/chat")
+async def cloud_chat(req: Request, x_jarvis_token: str | None = Header(None)):
+    """Cerebro do JARVIS em nuvem. Mantem o historico por dispositivo no Supabase."""
+    if not ok_token(x_jarvis_token): return denied()
+    if not GROQ_API_KEY:
+        return JSONResponse({"ok": False, "error": "groq_not_configured"}, 503)
+    try:
+        b = await req.json()
+        device_id = str(b.get("device_id") or "unknown")
+        text = str(b.get("text") or "").strip()
+        if not text:
+            return JSONResponse({"ok": False, "error": "text_required"}, 400)
+
+        # Ultimas mensagens do mesmo dispositivo.
+        hist = (supabase.table("jarvis_cloud_messages")
+                .select("role,content,created_at")
+                .eq("device_id", device_id)
+                .order("created_at", desc=True).limit(12).execute()).data or []
+        hist.reverse()
+        messages = [{"role": "system", "content": (
+            "Voce e JARVIS, um assistente pessoal em portugues brasileiro. "
+            "Seja natural, objetivo e util. O usuario pode usar PC, TV e um Galaxy J4+ "
+            "como terminal/sensor. Nao afirme que executou uma acao local se ela nao foi confirmada."
+        )}]
+        messages += [{"role": x["role"], "content": x["content"]} for x in hist if x.get("role") in ("user","assistant")]
+        messages.append({"role": "user", "content": text})
+
+        async with httpx.AsyncClient(timeout=45) as client:
+            rr = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                json={"model": GROQ_MODEL, "messages": messages, "temperature": 0.5, "max_tokens": 700},
+            )
+        if rr.status_code >= 400:
+            return JSONResponse({"ok": False, "error": "groq_error", "detail": rr.text[:1000]}, 502)
+        answer = rr.json()["choices"][0]["message"]["content"].strip()
+        supabase.table("jarvis_cloud_messages").insert([
+            {"device_id": device_id, "role": "user", "content": text},
+            {"device_id": device_id, "role": "assistant", "content": answer},
+        ]).execute()
+        return {"ok": True, "answer": answer, "device_id": device_id, "model": GROQ_MODEL}
+    except Exception as exc:
+        print("[CHAT]", repr(exc))
+        return JSONResponse({"ok": False, "error": "chat_error", "detail": str(exc)}, 500)
+
+@app.get("/v1/chat/history")
+def cloud_chat_history(device_id: str = "unknown", limit: int = Query(30, ge=1, le=200), x_jarvis_token: str | None = Header(None)):
+    if not ok_token(x_jarvis_token): return denied()
+    try:
+        r = (supabase.table("jarvis_cloud_messages").select("*")
+             .eq("device_id", device_id).order("created_at", desc=True).limit(limit).execute())
+        items = r.data or []
+        items.reverse()
+        return {"ok": True, "messages": items}
     except Exception as exc: return db_error(exc)
