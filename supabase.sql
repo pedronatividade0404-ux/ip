@@ -70,3 +70,13 @@ create table if not exists jarvis_cloud_messages (
 );
 create index if not exists idx_jarvis_cloud_messages_device_created
 on jarvis_cloud_messages(device_id, created_at desc);
+
+
+-- Bucket publico usado pelas capturas do Modo Sentinela.
+-- O upload e feito somente pelo backend usando a service role.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('jarvis-sentinel', 'jarvis-sentinel', true, 8388608, array['image/jpeg','image/png','image/webp'])
+on conflict (id) do update set
+  public = true,
+  file_size_limit = 8388608,
+  allowed_mime_types = array['image/jpeg','image/png','image/webp'];

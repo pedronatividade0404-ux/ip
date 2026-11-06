@@ -4,11 +4,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, Header, Query
+from fastapi import FastAPI, Request, Header, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from supabase import create_client, Client
 import httpx
+import uuid
 
 load_dotenv()
 
@@ -126,6 +127,36 @@ def sentinel_state_get(device_id: str = "j4plus", x_jarvis_token: str | None = H
         return {"ok": True, "state": (r.data or [{"device_id": device_id, "enabled": False, "mode": "motion"}])[0]}
     except Exception as exc: return db_error(exc)
 
+@app.post("/v1/sentinel/image")
+async def sentinel_image(
+    image: UploadFile = File(...),
+    device_id: str = Form("j4plus"),
+    x_jarvis_token: str | None = Header(None),
+):
+    """Recebe uma captura do Sentinela, salva no Supabase Storage e devolve URL publica."""
+    if not ok_token(x_jarvis_token): return denied()
+    try:
+        content_type = (image.content_type or "image/jpeg").lower()
+        if content_type not in ("image/jpeg", "image/jpg", "image/png", "image/webp"):
+            return JSONResponse({"ok": False, "error": "unsupported_image_type"}, 415)
+        data = await image.read()
+        if not data:
+            return JSONResponse({"ok": False, "error": "empty_image"}, 400)
+        if len(data) > 8 * 1024 * 1024:
+            return JSONResponse({"ok": False, "error": "image_too_large"}, 413)
+        ext = {"image/png": "png", "image/webp": "webp"}.get(content_type, "jpg")
+        safe_device = "".join(c for c in device_id if c.isalnum() or c in "-_" ) or "device"
+        now = datetime.now(timezone.utc)
+        object_path = f"{safe_device}/{now:%Y/%m/%d}/{now:%H%M%S}_{uuid.uuid4().hex[:10]}.{ext}"
+        supabase.storage.from_("jarvis-sentinel").upload(
+            object_path, data, {"content-type": content_type, "upsert": "false"}
+        )
+        public_url = f"{SUPABASE_URL}/storage/v1/object/public/jarvis-sentinel/{object_path}"
+        return {"ok": True, "image_url": public_url, "path": object_path}
+    except Exception as exc:
+        print("[SUPABASE STORAGE]", repr(exc))
+        return JSONResponse({"ok": False, "error": "image_upload_failed", "detail": str(exc)}, 500)
+
 @app.post("/v1/sentinel/event")
 async def sentinel_event(req: Request, x_jarvis_token: str | None = Header(None)):
     if not ok_token(x_jarvis_token): return denied()
@@ -168,6 +199,41 @@ async def cloud_chat(req: Request, x_jarvis_token: str | None = Header(None)):
         text = str(b.get("text") or "").strip()
         if not text:
             return JSONResponse({"ok": False, "error": "text_required"}, 400)
+
+        # Comandos do Sentinela funcionam diretamente na nuvem, mesmo com o PC desligado.
+        normalized = text.lower().strip()
+        sentinel_device = str(b.get("sentinel_device_id") or "j4plus")
+        if any(x in normalized for x in ("ativar sentinela", "ative o sentinela", "ativar modo sentinela", "arme o sentinela")):
+            row = {"device_id": sentinel_device, "enabled": True, "mode": "motion_face"}
+            supabase.table("jarvis_sentinel_state").upsert(row, on_conflict="device_id").execute()
+            return {"ok": True, "answer": "Modo Sentinela ativado no Galaxy J4+.", "action": "sentinel_activate"}
+        if any(x in normalized for x in ("desativar sentinela", "desative o sentinela", "desativar modo sentinela", "desarme o sentinela")):
+            row = {"device_id": sentinel_device, "enabled": False, "mode": "motion_face"}
+            supabase.table("jarvis_sentinel_state").upsert(row, on_conflict="device_id").execute()
+            return {"ok": True, "answer": "Modo Sentinela desativado no Galaxy J4+.", "action": "sentinel_deactivate"}
+        if any(x in normalized for x in ("quem entrou no meu quarto", "quem entrou no quarto", "eventos do sentinela", "histórico do sentinela", "historico do sentinela")):
+            r = (supabase.table("jarvis_sentinel_events").select("*")
+                 .eq("device_id", sentinel_device).order("created_at", desc=True).limit(20).execute())
+            events = r.data or []
+            people = [e for e in events if e.get("event_type") in ("face_detected","person_detected","person_entered","recognized_face","unknown_face")]
+            if not people:
+                answer = "Não encontrei entradas de pessoas registradas pelo Sentinela."
+            else:
+                parts = []
+                for e in people[:8]:
+                    person = e.get("person_name") or "pessoa desconhecida"
+                    when = str(e.get("created_at") or "horário desconhecido")
+                    parts.append(f"{person} em {when}")
+                answer = "Registros recentes: " + "; ".join(parts) + "."
+            return {"ok": True, "answer": answer, "action": "sentinel_events", "events": people}
+        if any(x in normalized for x in ("onde está meu celular", "onde esta meu celular", "localizar meu celular", "onde está o j4", "onde esta o j4")):
+            r = supabase.table("jarvis_location").select("*").eq("device_id", sentinel_device).limit(1).execute()
+            loc = (r.data or [None])[0]
+            if not loc:
+                answer = "O Galaxy J4+ ainda não enviou uma localização."
+            else:
+                answer = f"A última localização do Galaxy J4+ é latitude {loc.get('latitude')} e longitude {loc.get('longitude')}, com precisão aproximada de {loc.get('accuracy')} metros."
+            return {"ok": True, "answer": answer, "action": "phone_location", "location": loc}
 
         # Ultimas mensagens do mesmo dispositivo.
         hist = (supabase.table("jarvis_cloud_messages")
